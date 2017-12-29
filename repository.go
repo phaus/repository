@@ -2,15 +2,29 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 
 	"strings"
 
 	"github.com/labstack/echo"
+	"github.com/tkanos/gonfig"
 )
+
+// Configuration of Repository Service
+type Configuration struct {
+	Port           int
+	RepositoryPath string
+}
 
 func main() {
 	e := echo.New()
+
+	configuration := Configuration{}
+	err := gonfig.GetConf("config/config.json", &configuration)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	e.GET("/repositories/:repositoryId/*", getArtifact)
 
@@ -22,7 +36,7 @@ func main() {
 	e.GET("/", func(c echo.Context) error {
 		return c.String(http.StatusOK, "Hello, World!")
 	})
-	e.Logger.Fatal(e.Start(":5000"))
+	e.Logger.Fatal(e.Start(fmt.Sprintf(":%d", configuration.Port)))
 }
 
 // An Artifact structure is used hold the details of a Maven Artifact.
