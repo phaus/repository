@@ -1,5 +1,9 @@
 # Maven Repository Server in golang
 
+The motivation to build this is basically this issue:
+
+https://gitlab.com/gitlab-org/gitlab-ee/issues/2752
+
 ## an URL of a Maven Artifact is defined as:
 
     <repositoryUrl>/<groupID>/<artifactID>/<version>/<artifactID>-<version>.<type>
