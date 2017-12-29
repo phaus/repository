@@ -12,6 +12,6 @@ You need to add a configuration in `config`. This might look like this:
 ````
 {
     "Port":5000,
-    "RepositoryPath": "~/.m2/"
+    "RepositoryPath": "/folder/.m2"
 }
 ````

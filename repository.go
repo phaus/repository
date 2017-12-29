@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
 	"strings"
 
@@ -17,10 +18,12 @@ type Configuration struct {
 	RepositoryPath string
 }
 
+var configuration Configuration
+
 func main() {
 	e := echo.New()
 
-	configuration := Configuration{}
+	configuration = Configuration{}
 	err := gonfig.GetConf("config/config.json", &configuration)
 	if err != nil {
 		log.Fatal(err)
@@ -46,6 +49,7 @@ type Artifact struct {
 	Version    string
 	Classifier string
 	Packaging  string
+	File       string
 }
 
 func getArtifact(c echo.Context) error {
@@ -53,15 +57,35 @@ func getArtifact(c echo.Context) error {
 	repository := c.Param("repositoryId")
 	artifactString := strings.Replace(path, "/repositories/"+repository+"/", "", 1)
 	artifact := mapArtifact(artifactString)
-	return c.String(http.StatusOK, "repository:"+repository+", artifact:"+fmt.Sprintf("%#v", artifact))
+	artifactPath := getArtifactPath(artifact)
+	artifactLocation := fmt.Sprintf("%s%s%s%s%s", configuration.RepositoryPath, string(os.PathSeparator), repository, string(os.PathSeparator), artifactPath)
+	if _, err := os.Stat(artifactLocation); os.IsNotExist(err) {
+		fmt.Printf("%s does not exists!", artifactLocation)
+		return c.String(http.StatusNotFound, fmt.Sprintf("%s does not exists!", artifactLocation))
+	}
+	fmt.Printf("\nrepository: %s\npath: %s\nartifact: %s\n",
+		repository,
+		artifactPath,
+		fmt.Sprintf("%#v", artifact))
+	return c.File(artifactLocation)
 }
 
-// com/nimbusds/nimbus-jose-jwt/3.9/nimbus-jose-jwt-3.9.pom
-// groupId/artifactId/version/artifactId-version
+func getArtifactPath(artifact *Artifact) string {
+	pathSeparator := string(os.PathSeparator)
+	return fmt.Sprintf("%s%s%s%s%s%s%s",
+		strings.Replace(artifact.GroupID, ".", pathSeparator, -1),
+		pathSeparator,
+		artifact.ArtifactID,
+		pathSeparator,
+		artifact.Version,
+		pathSeparator,
+		artifact.File)
+}
+
 func mapArtifact(artifactString string) *Artifact {
 	parts := strings.Split(artifactString, "/")
 	partsLen := len(parts)
-	fmt.Printf("%q %d\n", parts, partsLen)
+
 	var offset int
 	if "jars" == parts[partsLen-2] {
 		offset = 1
@@ -70,10 +94,12 @@ func mapArtifact(artifactString string) *Artifact {
 	}
 	version := parts[partsLen-2-offset]
 	artifactID := parts[partsLen-3-offset]
-	artifactParts := strings.Split(parts[len(parts)-1], ".")
-	fmt.Printf("%q %d\n", artifactParts, len(artifactParts))
+	artifactFile := parts[len(parts)-1]
+	artifactParts := strings.Split(artifactFile, ".")
+
 	packaging := artifactParts[len(artifactParts)-1]
 	groupdID := strings.Join(parts[:partsLen-3-offset], ".")
-
-	return &Artifact{ArtifactID: artifactID, GroupID: groupdID, Version: version, Classifier: "", Packaging: packaging}
+	fmt.Printf("%q %d\n", parts, partsLen)
+	fmt.Printf("%q %d\n", artifactParts, len(artifactParts))
+	return &Artifact{ArtifactID: artifactID, GroupID: groupdID, Version: version, Classifier: "", Packaging: packaging, File: artifactFile}
 }
