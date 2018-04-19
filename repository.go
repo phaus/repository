@@ -1,14 +1,16 @@
 package main
 
 import (
+	"crypto/sha1"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
-
 	"strings"
 
 	"github.com/labstack/echo"
+	"github.com/labstack/echo/middleware"
 	"github.com/tkanos/gonfig"
 )
 
@@ -23,13 +25,16 @@ var configuration Configuration
 func main() {
 	e := echo.New()
 
+	e.Use(middleware.Logger())
+
 	configuration = Configuration{}
 	err := gonfig.GetConf("config/config.json", &configuration)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("error %#v", err)
 	}
 
 	e.GET("/repositories/:repositoryId/*", getArtifact)
+	e.HEAD("/repositories/:repositoryId/*", headArtifact)
 
 	//	e.POST("/users", saveUser)
 
@@ -52,22 +57,48 @@ type Artifact struct {
 	File       string
 }
 
-func getArtifact(c echo.Context) error {
-	path := c.Request().URL.Path
-	repository := c.Param("repositoryId")
-	artifactString := strings.Replace(path, "/repositories/"+repository+"/", "", 1)
-	artifact := mapArtifact(artifactString)
-	artifactPath := getArtifactPath(artifact)
-	artifactLocation := fmt.Sprintf("%s%s%s%s%s", configuration.RepositoryPath, string(os.PathSeparator), repository, string(os.PathSeparator), artifactPath)
-	if _, err := os.Stat(artifactLocation); os.IsNotExist(err) {
-		fmt.Printf("%s does not exists!", artifactLocation)
-		return c.String(http.StatusNotFound, fmt.Sprintf("%s does not exists!", artifactLocation))
+// An ArtifactFile is a struct representing the Artifact File itself.
+type ArtifactFile struct {
+	Repository string
+	Name       string
+	Path       string
+	Location   string
+	Artifact   Artifact
+}
+
+func headArtifact(c echo.Context) error {
+	setDefaultHeaders(c)
+	artifactFile := mapArtifactFile(c)
+	log.Printf("artifactFile: %#v", artifactFile)
+	if _, err := os.Stat(artifactFile.Location); os.IsNotExist(err) {
+		log.Fatalf("%s does not exists!", artifactFile.Location)
+		return c.String(http.StatusNotFound, fmt.Sprintf("%s does not exists!", artifactFile.Location))
 	}
-	fmt.Printf("\nrepository: %s\npath: %s\nartifact: %s\n",
-		repository,
-		artifactPath,
-		fmt.Sprintf("%#v", artifact))
-	return c.File(artifactLocation)
+	c.Response().Header().Set("Content-Type", "application/octet-stream")
+	fi, err := os.Stat(artifactFile.Location)
+	if err != nil {
+		log.Fatalf("error %#v", err)
+		return c.String(http.StatusInternalServerError, fmt.Sprintf("%#v", err))
+	}
+	c.Response().Header().Set("Content-Length", fmt.Sprintf("%d", fi.Size()))
+	c.Response().Header().Set("Last-Modified", fi.ModTime().Format(http.TimeFormat))
+	c.Response().Header().Set("ETag", getETag(artifactFile.Location))
+	return c.String(http.StatusOK, fmt.Sprintf("%#v", artifactFile.Artifact))
+}
+
+func getArtifact(c echo.Context) error {
+	setDefaultHeaders(c)
+	artifactFile := mapArtifactFile(c)
+	if _, err := os.Stat(artifactFile.Location); os.IsNotExist(err) {
+		log.Fatalf("%s does not exists!", artifactFile.Location)
+		return c.String(http.StatusNotFound, fmt.Sprintf("%s does not exists!", artifactFile.Location))
+	}
+
+	log.Printf("\nrepository: %s\npath: %s\nartifact: %s\n",
+		artifactFile.Repository,
+		artifactFile.Path,
+		fmt.Sprintf("%#v", artifactFile.Artifact))
+	return c.File(artifactFile.Location)
 }
 
 func getArtifactPath(artifact *Artifact) string {
@@ -80,6 +111,17 @@ func getArtifactPath(artifact *Artifact) string {
 		artifact.Version,
 		pathSeparator,
 		artifact.File)
+}
+
+func mapArtifactFile(c echo.Context) *ArtifactFile {
+	pathSeparator := string(os.PathSeparator)
+	path := c.Request().URL.Path
+	repository := c.Param("repositoryId")
+	artifactString := strings.Replace(path, "/repositories/"+repository+"/", "", 1)
+	artifact := mapArtifact(artifactString)
+	artifactPath := getArtifactPath(artifact)
+	artifactLocation := fmt.Sprintf("%s%s%s%s%s", configuration.RepositoryPath, pathSeparator, repository, pathSeparator, artifactPath)
+	return &ArtifactFile{Repository: repository, Name: artifactString, Path: artifactPath, Location: artifactLocation, Artifact: *artifact}
 }
 
 func mapArtifact(artifactString string) *Artifact {
@@ -99,7 +141,36 @@ func mapArtifact(artifactString string) *Artifact {
 
 	packaging := artifactParts[len(artifactParts)-1]
 	groupdID := strings.Join(parts[:partsLen-3-offset], ".")
-	fmt.Printf("%q %d\n", parts, partsLen)
-	fmt.Printf("%q %d\n", artifactParts, len(artifactParts))
+	log.Printf("%q %d\n", parts, partsLen)
+	log.Printf("%q %d\n", artifactParts, len(artifactParts))
 	return &Artifact{ArtifactID: artifactID, GroupID: groupdID, Version: version, Classifier: "", Packaging: packaging, File: artifactFile}
+}
+
+func setDefaultHeaders(c echo.Context) {
+	c.Response().Header().Set("Server", "repository/0.0.1")
+}
+
+func getETag(filePath string) string {
+	var eTag string
+	if _, err := os.Stat(filePath + ".sha1"); os.IsNotExist(err) {
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			log.Fatalf("%s does not exists!", filePath)
+			return ""
+		}
+		b, err := ioutil.ReadFile(filePath)
+		if err != nil {
+			log.Fatalf("error %#v", err)
+			return ""
+		}
+		eTag = fmt.Sprintf("%x", sha1.Sum(b))
+	} else {
+		b, err := ioutil.ReadFile(filePath + ".sha1")
+		if err != nil {
+			log.Fatalf("error %#v", err)
+			return ""
+		}
+		eTag = string(b)
+	}
+	log.Printf("eTag of %s is %s", filePath, eTag)
+	return eTag
 }
