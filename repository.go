@@ -84,6 +84,7 @@ type ArtifactFile struct {
 	Name       string
 	Path       string
 	Location   string
+	Folder     string
 	Artifact   Artifact
 }
 
@@ -127,9 +128,8 @@ func getArtifact(c echo.Context) error {
 func putArtifact(c echo.Context) error {
 	setDefaultHeaders(c)
 	artifactFile := mapArtifactFile(c)
-	dirPath := filepath.Dir(artifactFile.Location)
-	log.Printf("Checking path %s", dirPath)
-	err := os.MkdirAll(dirPath, os.ModePerm)
+	log.Printf("Checking path %s", artifactFile.Folder)
+	err := os.MkdirAll(artifactFile.Folder, os.ModePerm)
 	if err != nil {
 		log.Printf("MkdirAll: %s", err.Error())
 		return c.String(http.StatusInternalServerError, fmt.Sprintf("MkdirAll: %s", err.Error()))
@@ -145,6 +145,11 @@ func putArtifact(c echo.Context) error {
 		log.Printf("io.Copy: %s", err.Error())
 		return c.String(http.StatusInternalServerError, fmt.Sprintf("io.Copy: %s", err.Error()))
 	}
+
+	if strings.HasSuffix(strings.ToLower(artifactFile.Artifact.Version), "snapshot") {
+		cleanArtifactSnapshot(artifactFile)
+	}
+
 	log.Printf("Writing %d bytes to %s", n, artifactFile.Location)
 	return c.String(http.StatusOK, fmt.Sprintf("%#v", artifactFile.Artifact))
 }
@@ -157,6 +162,19 @@ func getArtifactPath(artifact *Artifact) string {
 		artifact.File)
 }
 
+func cleanArtifactSnapshot(artifactFile *ArtifactFile) {
+	log.Printf("cleaning %q", artifactFile)
+	err := filepath.Walk(artifactFile.Folder, func(path string, info os.FileInfo, err error) error {
+		if strings.HasSuffix(path, artifactFile.Artifact.Packaging) {
+			//log.Printf("%s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("filepath.Walk: %s", err.Error())
+	}
+}
+
 func mapArtifactFile(c echo.Context) *ArtifactFile {
 	requestPath := c.Request().URL.Path
 	repository := c.Param("repositoryId")
@@ -167,7 +185,13 @@ func mapArtifactFile(c echo.Context) *ArtifactFile {
 	artifact := mapArtifact(artifactString)
 	artifactPath := getArtifactPath(artifact)
 	artifactLocation := path.Join(configuration.RepositoryPath, repository, artifactPath)
-	return &ArtifactFile{Repository: repository, Name: artifactString, Path: artifactPath, Location: artifactLocation, Artifact: *artifact}
+	return &ArtifactFile{
+		Repository: repository,
+		Name:       artifactString,
+		Path:       artifactPath,
+		Location:   artifactLocation,
+		Folder:     filepath.Dir(artifactLocation),
+		Artifact:   *artifact}
 }
 
 func mapArtifact(artifactString string) *Artifact {
@@ -189,8 +213,20 @@ func mapArtifact(artifactString string) *Artifact {
 	artifactParts := strings.Split(artifactFile, ".")
 	packaging := artifactParts[len(artifactParts)-1]
 	groupdID := strings.Join(parts[:partsLen-3-offset], ".")
-	log.Printf("Artifact: %s:%s:%s:%s", groupdID, artifactID, packaging, version)
-	return &Artifact{ArtifactID: artifactID, GroupID: groupdID, Version: version, Classifier: "", Packaging: packaging, File: artifactFile}
+	classifier := mapClassifier(artifactString, packaging)
+	log.Printf("Artifact: %s:%s:%s:%s:%s", groupdID, artifactID, classifier, packaging, version)
+	return &Artifact{ArtifactID: artifactID, GroupID: groupdID, Version: version, Classifier: classifier, Packaging: packaging, File: artifactFile}
+}
+
+func mapClassifier(artifactString string, packaging string) string {
+	parts := strings.Split(artifactString, "-")
+	lastPart := parts[len(parts)-1]
+	if len(parts) > 1 && strings.HasSuffix(lastPart, packaging) {
+		if strings.Count(lastPart, ".") == 1 {
+			return strings.Replace(lastPart, fmt.Sprintf(".%s", packaging), "", -1)
+		}
+	}
+	return ""
 }
 
 func setDefaultHeaders(c echo.Context) {
