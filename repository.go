@@ -3,10 +3,12 @@ package main
 import (
 	"crypto/sha1"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/labstack/echo"
@@ -35,9 +37,9 @@ func main() {
 
 	e.GET("/repositories/:repositoryId/*", getArtifact)
 	e.HEAD("/repositories/:repositoryId/*", headArtifact)
+	e.PUT("/repositories/:repositoryId/*", putArtifact)
 
 	//	e.POST("/users", saveUser)
-
 	//	e.PUT("/users/:id", updateUser)
 	//	e.DELETE("/users/:id", deleteUser)
 
@@ -71,13 +73,11 @@ func headArtifact(c echo.Context) error {
 	artifactFile := mapArtifactFile(c)
 	log.Printf("artifactFile: %#v", artifactFile)
 	if _, err := os.Stat(artifactFile.Location); os.IsNotExist(err) {
-		log.Fatalf("%s does not exists!", artifactFile.Location)
 		return c.String(http.StatusNotFound, fmt.Sprintf("%s does not exists!", artifactFile.Location))
 	}
 	c.Response().Header().Set("Content-Type", "application/octet-stream")
 	fi, err := os.Stat(artifactFile.Location)
 	if err != nil {
-		log.Fatalf("error %#v", err)
 		return c.String(http.StatusInternalServerError, fmt.Sprintf("%#v", err))
 	}
 	c.Response().Header().Set("Content-Length", fmt.Sprintf("%d", fi.Size()))
@@ -90,7 +90,6 @@ func getArtifact(c echo.Context) error {
 	setDefaultHeaders(c)
 	artifactFile := mapArtifactFile(c)
 	if _, err := os.Stat(artifactFile.Location); os.IsNotExist(err) {
-		log.Fatalf("%s does not exists!", artifactFile.Location)
 		return c.String(http.StatusNotFound, fmt.Sprintf("%s does not exists!", artifactFile.Location))
 	}
 
@@ -99,6 +98,31 @@ func getArtifact(c echo.Context) error {
 		artifactFile.Path,
 		fmt.Sprintf("%#v", artifactFile.Artifact))
 	return c.File(artifactFile.Location)
+}
+
+func putArtifact(c echo.Context) error {
+	setDefaultHeaders(c)
+	artifactFile := mapArtifactFile(c)
+	dirPath := filepath.Dir(artifactFile.Location)
+	log.Printf("Checking path %s", dirPath)
+	err := os.MkdirAll(dirPath, os.ModePerm)
+	if err != nil {
+		log.Printf("MkdirAll: %s", err.Error())
+		return c.String(http.StatusInternalServerError, fmt.Sprintf("MkdirAll: %s", err.Error()))
+	}
+	outFile, err := os.Create(artifactFile.Location)
+	if err != nil {
+		log.Printf("os.Create: %s", err.Error())
+		return c.String(http.StatusInternalServerError, fmt.Sprintf("os.Create: %s", err.Error()))
+	}
+	defer outFile.Close()
+	n, err := io.Copy(outFile, c.Request().Body)
+	if err != nil {
+		log.Printf("io.Copy: %s", err.Error())
+		return c.String(http.StatusInternalServerError, fmt.Sprintf("io.Copy: %s", err.Error()))
+	}
+	log.Printf("Writing %d bytes to %s", n, artifactFile.Location)
+	return c.String(http.StatusOK, fmt.Sprintf("%#v", artifactFile.Artifact))
 }
 
 func getArtifactPath(artifact *Artifact) string {
