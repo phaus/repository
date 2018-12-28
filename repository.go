@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -18,11 +19,28 @@ import (
 
 // Configuration of Repository Service
 type Configuration struct {
-	Port           int
-	RepositoryPath string
+	Port              int
+	RepositoryPath    string
+	DefaultRepository string
 }
 
 var configuration Configuration
+
+var banner string
+
+func init() {
+	banner = `
+	_____                                   
+	|     |___ _ _ ___ ___                   
+	| | | | .'| | | -_|   |                  
+	|_|_|_|__,|\_/|___|_|_|                  
+	 _____                 _ _               
+	| __  |___ ___ ___ ___|_| |_ ___ ___ _ _ 
+	|    -| -_| . | . |_ -| |  _| . |  _| | |
+	|__|__|___|  _|___|___|_|_| |___|_| |_  |
+		  |_|                       |___|
+`
+}
 
 func main() {
 	e := echo.New()
@@ -35,17 +53,18 @@ func main() {
 		log.Fatalf("error %#v", err)
 	}
 
+	e.GET("/", func(c echo.Context) error {
+		return c.HTML(http.StatusOK, fmt.Sprintf("<pre>%s</pre>", banner))
+	})
+
+	e.GET("/*", getArtifact)
+	e.HEAD("/*", headArtifact)
+	e.PUT("/*", putArtifact)
+
 	e.GET("/repositories/:repositoryId/*", getArtifact)
 	e.HEAD("/repositories/:repositoryId/*", headArtifact)
 	e.PUT("/repositories/:repositoryId/*", putArtifact)
 
-	//	e.POST("/users", saveUser)
-	//	e.PUT("/users/:id", updateUser)
-	//	e.DELETE("/users/:id", deleteUser)
-
-	e.GET("/", func(c echo.Context) error {
-		return c.String(http.StatusOK, "Hello, World!")
-	})
 	e.Logger.Fatal(e.Start(fmt.Sprintf(":%d", configuration.Port)))
 }
 
@@ -89,6 +108,11 @@ func headArtifact(c echo.Context) error {
 func getArtifact(c echo.Context) error {
 	setDefaultHeaders(c)
 	artifactFile := mapArtifactFile(c)
+
+	if artifactFile.Path == "" {
+		return c.String(http.StatusNotFound, fmt.Sprintf("%s does not exists!", artifactFile.Location))
+	}
+
 	if _, err := os.Stat(artifactFile.Location); os.IsNotExist(err) {
 		return c.String(http.StatusNotFound, fmt.Sprintf("%s does not exists!", artifactFile.Location))
 	}
@@ -127,24 +151,22 @@ func putArtifact(c echo.Context) error {
 
 func getArtifactPath(artifact *Artifact) string {
 	pathSeparator := string(os.PathSeparator)
-	return fmt.Sprintf("%s%s%s%s%s%s%s",
-		strings.Replace(artifact.GroupID, ".", pathSeparator, -1),
-		pathSeparator,
+	return path.Join(strings.Replace(artifact.GroupID, ".", pathSeparator, -1),
 		artifact.ArtifactID,
-		pathSeparator,
 		artifact.Version,
-		pathSeparator,
 		artifact.File)
 }
 
 func mapArtifactFile(c echo.Context) *ArtifactFile {
-	pathSeparator := string(os.PathSeparator)
-	path := c.Request().URL.Path
+	requestPath := c.Request().URL.Path
 	repository := c.Param("repositoryId")
-	artifactString := strings.Replace(path, "/repositories/"+repository+"/", "", 1)
+	if repository == "" {
+		repository = configuration.DefaultRepository
+	}
+	artifactString := strings.Replace(requestPath, "/repositories/"+repository+"/", "", 1)
 	artifact := mapArtifact(artifactString)
 	artifactPath := getArtifactPath(artifact)
-	artifactLocation := fmt.Sprintf("%s%s%s%s%s", configuration.RepositoryPath, pathSeparator, repository, pathSeparator, artifactPath)
+	artifactLocation := path.Join(configuration.RepositoryPath, repository, artifactPath)
 	return &ArtifactFile{Repository: repository, Name: artifactString, Path: artifactPath, Location: artifactLocation, Artifact: *artifact}
 }
 
@@ -158,15 +180,16 @@ func mapArtifact(artifactString string) *Artifact {
 	} else {
 		offset = 0
 	}
+	if partsLen-offset-3 < 0 {
+		return &Artifact{}
+	}
 	version := parts[partsLen-2-offset]
 	artifactID := parts[partsLen-3-offset]
 	artifactFile := parts[len(parts)-1]
 	artifactParts := strings.Split(artifactFile, ".")
-
 	packaging := artifactParts[len(artifactParts)-1]
 	groupdID := strings.Join(parts[:partsLen-3-offset], ".")
-	log.Printf("%q %d\n", parts, partsLen)
-	log.Printf("%q %d\n", artifactParts, len(artifactParts))
+	log.Printf("Artifact: %s:%s:%s:%s", groupdID, artifactID, packaging, version)
 	return &Artifact{ArtifactID: artifactID, GroupID: groupdID, Version: version, Classifier: "", Packaging: packaging, File: artifactFile}
 }
 
